@@ -1,90 +1,108 @@
-const express = require("express");
-const ytdl = require("ytdl-core");
-const cors = require("cors");
+import express from 'express';
+import ytdl    from 'ytdl-core';
+import cors    from 'cors';
 
 const app = express();
 app.use(cors());
 
-app.get("/", (req, res) => {
-    const ping = new Date();
-    ping.setHours(ping.getHours() - 3);
-    console.log(
-        `Ping at: ${ping.getUTCHours()}:${ping.getUTCMinutes()}:${ping.getUTCSeconds()}`
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+// Extrae sólo el ID de YouTube y reconstruye la URL limpia.
+function normalizeYouTubeUrl(raw) {
+  try {
+    const u = new URL(raw);
+    let id = null;
+    if (u.hostname.includes('youtube.com')) {
+      id = u.searchParams.get('v');
+    } else if (u.hostname === 'youtu.be') {
+      id = u.pathname.slice(1);
+    }
+    if (!id) return null;
+    return `https://www.youtube.com/watch?v=${id}`;
+  } catch {
+    return null;
+  }
+}
+
+// ─── Endpoints ─────────────────────────────────────────────────────────────
+
+// Ping / healthcheck
+app.get('/', (_req, res) => res.sendStatus(200));
+app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+
+// Video info (igual que antes)
+app.get('/info', async (req, res) => {
+  const raw = req.query.url;
+  const url = normalizeYouTubeUrl(raw);
+  if (!url) return res.status(400).send('Invalid url');
+
+  if (!ytdl.validateURL(url)) {
+    return res.status(400).send('Invalid url');
+  }
+  try {
+    const info = (await ytdl.getInfo(url)).videoDetails;
+    const title     = info.title;
+    const thumbnail = info.thumbnails[2]?.url;
+    res.json({ title, thumbnail });
+  } catch (err) {
+    console.error('[/info] error:', err.message);
+    res.status(500).send('Error fetching info');
+  }
+});
+
+// MP3 download (igual que antes)
+app.get('/mp3', async (req, res) => {
+  const raw = req.query.url;
+  const url = normalizeYouTubeUrl(raw);
+  if (!url) return res.status(400).send('Invalid url');
+
+  if (!ytdl.validateURL(url)) {
+    return res.status(400).send('Invalid url');
+  }
+  try {
+    const videoName = (await ytdl.getInfo(url)).videoDetails.title;
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${videoName}.mp3"`
     );
-    res.sendStatus(200);
+    res.setHeader('Content-Type', 'audio/mpeg');
+    ytdl(url, { quality: 'highestaudio', filter: 'audioonly' }).pipe(res);
+  } catch (err) {
+    console.error('[/mp3] error:', err.message);
+    res.status(500).send('Error streaming audio');
+  }
 });
 
-app.get("/info", async (req, res) => {
-    const { url } = req.query;
+// MP4 download (limpia URL para evitar el 410)
+app.get('/mp4', async (req, res) => {
+  const raw = req.query.url;
+  const url = normalizeYouTubeUrl(raw);
+  if (!url) return res.status(400).send('Invalid url');
 
-    if (url) {
-        const isValid = ytdl.validateURL(url);
+  if (!ytdl.validateURL(url)) {
+    return res.status(400).send('Invalid url');
+  }
+  try {
+    const info      = await ytdl.getInfo(url);
+    const title     = info.videoDetails.title.replace(/[^a-zA-Z0-9 _-]/g, '');
+    const filename  = `${title}.mp4`;
 
-        if (isValid) {
-            const info = (await ytdl.getInfo(url)).videoDetails;
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${filename}"`
+    );
+    res.setHeader('Content-Type', 'video/mp4');
 
-            const title = info.title;
-            const thumbnail = info.thumbnails[2].url;
-
-            res.send({ title: title, thumbnail: thumbnail });
-        } else {
-            res.status(400).send("Invalid url");
-        }
-    } else {
-        res.status(400).send("Invalid query");
-    }
+    // calidad más alta mp4
+    ytdl(url, { quality: 'highest', filter: 'audioandvideo' }).pipe(res);
+  } catch (err) {
+    console.error('[/mp4] error:', err.message);
+    res.status(500).send('Error streaming video');
+  }
 });
 
-app.get("/mp3", async (req, res) => {
-    const { url } = req.query;
-
-    if (url) {
-        const isValid = ytdl.validateURL(url);
-
-        if (isValid) {
-            const videoName = (await ytdl.getInfo(url)).videoDetails.title;
-
-            res.header(
-                "Content-Disposition",
-                `attachment; filename="${videoName}.mp3"`
-            );
-            res.header("Content-type", "audio/mpeg3");
-
-            ytdl(url, { quality: "highestaudio", format: "mp3" }).pipe(res);
-        } else {
-            res.status(400).send("Invalid url");
-        }
-    } else {
-        res.status(400).send("Invalid query");
-    }
-});
-
-app.get("/mp4", async (req, res) => {
-    const { url } = req.query;
-
-    if (url) {
-        const isValid = ytdl.validateURL(url);
-
-        if (isValid) {
-            const videoName = (await ytdl.getInfo(url)).videoDetails.title;
-
-            res.header(
-                "Content-Disposition",
-                `attachment; filename="${videoName}.mp4"`
-            );
-
-            ytdl(url, {
-                quality: "highest",
-                format: "mp4",
-            }).pipe(res);
-        } else {
-            res.status(400).send("Invalid url");
-        }
-    } else {
-        res.status(400).send("Invalid query");
-    }
-});
-
-app.listen(process.env.PORT || 3500, () => {
-    console.log("Server on");
+// ─── Arranque ───────────────────────────────────────────────────────────────
+const PORT = process.env.PORT || 3500;
+app.listen(PORT, () => {
+  console.log(`Server on port ${PORT}`);
 });
